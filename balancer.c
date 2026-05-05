@@ -6,10 +6,20 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/time.h>
+
+/*
+ * This file is macos specific. On linux we use epoll for event poll implementation.
+ * But as I'm on macos. We are using kqueue which is macos alternative for epoll.
+ * Later will port this event poll implementation to epoll on Linux.
+ * */
+#include <sys/event.h>
 
 #define PORT 8080
 #define BACKLOG_SIZE 128
 #define MSG_MAX_SIZE 1024
+#define MSG_MAX_SIZE 1024
+#define MAX_EVENTS 1024
 
 /*
  * This function enabled non-blocking mode on any file descriptor.
@@ -50,8 +60,7 @@ int main(void) {
         exit(-1);
     }
 
-    int res = bind(socket_fd, (struct sockaddr *)&server_sockaddr_in, sizeof(server_sockaddr_in));
-    if (res == -1) {
+    if (bind(socket_fd, (struct sockaddr *)&server_sockaddr_in, sizeof(server_sockaddr_in)) == -1) {
         printf("unable to bind socket: %s", strerror(errno));
         exit(-1);
     }
@@ -62,11 +71,18 @@ int main(void) {
      * When a server starts listening for connections, the kernel maintains internal queues to manage incoming TCP requests
      * before the application officially "accepts" them with the accept() call.
      */
-    res = listen(socket_fd, BACKLOG_SIZE);
-    if (res == -1) {
+    if (listen(socket_fd, BACKLOG_SIZE) == -1) {
         printf("unable to listen on socket: %s", strerror(errno));
         exit(-1);
     }
+
+    int kq = kqueue();
+    if (kq == -1) {
+        perror("kqueue");
+        exit(1);
+    }
+
+
 
     struct sockaddr_in client_addr;
     socklen_t len = sizeof(client_addr);
