@@ -8,21 +8,17 @@
 #include <fcntl.h>
 #include <sys/time.h>
 
-/*
- * This file is macos specific. On linux we use epoll for event poll implementation.
- * But as I'm on macos. We are using kqueue which is macos alternative for epoll.
- * Later will port this event poll implementation to epoll on Linux.
- * */
 #include <sys/event.h>
 
 #define PORT 8080
+
+
 #define BACKLOG_SIZE 128
-#define MSG_MAX_SIZE 1024
 #define MSG_MAX_SIZE 1024
 #define MAX_EVENTS 1024
 
 /*
- * This function enabled non-blocking mode on any file descriptor.
+ * This function enables non-blocking mode on any file descriptor.
  * Syscalls like read(), write(), accept() are blocking by default. If there is no data program waits (get stucked).
  * In non-blocking mode these functions returns instantly instead of waiting.
  */
@@ -46,22 +42,22 @@ int main(void) {
     */
     server_sockaddr_in.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    /*htons converts host byte order to network byte order for unsigned short integer. */
+    /* htons converts host byte order to network byte order for unsigned short integer. */
     server_sockaddr_in.sin_port = htons(PORT);
 
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd == -1) {
-        printf("unable to create socket: %s", strerror(errno));
+        perror("unable to create socket");
         exit(-1);
     }
 
     if (set_non_blocking(socket_fd) == -1) {
-        printf("unable to enable non blocking mode on socket: %s", strerror(errno));
+        perror("unable to enable non blocking mode on socket");
         exit(-1);
     }
 
     if (bind(socket_fd, (struct sockaddr *)&server_sockaddr_in, sizeof(server_sockaddr_in)) == -1) {
-        printf("unable to bind socket: %s", strerror(errno));
+        perror("unable to bind socket");
         exit(-1);
     }
 
@@ -72,7 +68,7 @@ int main(void) {
      * before the application officially "accepts" them with the accept() call.
      */
     if (listen(socket_fd, BACKLOG_SIZE) == -1) {
-        printf("unable to listen on socket: %s", strerror(errno));
+        perror("unable to listen on socket");
         exit(-1);
     }
 
@@ -82,27 +78,91 @@ int main(void) {
         exit(1);
     }
 
+    struct kevent ev;
 
 
-    struct sockaddr_in client_addr;
-    socklen_t len = sizeof(client_addr);
+    EV_SET(&ev, socket_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+
+
+
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) == -1) {
+        perror("unable to register kevent");
+        exit(1);
+    }
+
+    struct kevent events[MAX_EVENTS];
+
 
     while (1) {
-        int conn_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len);
-        printf("connection accepted\n");
 
-        char buffer[MSG_MAX_SIZE];
 
-        while (1) {
-            memset(buffer, 0, sizeof(buffer));
+        int nev = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
 
-            int n = read(conn_fd, buffer, sizeof(buffer) - 1);
-            if (n < 0) {
-                printf("unable to read from client: %s", strerror(errno));
-                exit(-1);
+        if (nev == -1) {
+            perror("kevent wait");
+            exit(1);
+        }
+
+        /* Processing each ready event using it's file descriptor. */
+        for (int i = 0; i < nev; i++) {
+            int fd = (int)events[i].ident;
+
+            /* Received file descriptor is socket_fd. We will not accept incoming connections. */
+            if (fd == socket_fd) {
+                while(1) {
+                    struct sockaddr_in client_addr;
+                    socklen_t len = sizeof(client_addr);
+
+                    int conn_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len);
+                    if (conn_fd == -1) {
+                        /*
+                         * These errors are occured when there are no more connections to accept.
+                         */
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break;
+                        } else {
+                            perror("connection accept error");
+                            break;
+                        }
+                    }
+
+                    if (set_non_blocking(conn_fd) == -1) {
+                        perror("error while enabling non blocking mode in conn_fd");
+                        close(conn_fd);
+                        continue;
+                    }
+
+                    struct kevent client_ev;
+                    EV_SET(&client_ev, conn_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+                    kevent(kq, &client_ev, 1, NULL, 0, NULL);
+
+                    printf("New connection: %d\n", conn_fd);
+                }
+            } else {
+                char buffer[MSG_MAX_SIZE];
+
+                int n = read(fd, buffer, sizeof(buffer) - 1);
+
+                if (n <= 0) {
+                    if (n == 0) {
+                        printf("client disconnected: %d\n", fd);
+                    } else {
+                        perror("client read error");
+                    }
+
+                    close(fd);
+
+                    struct kevent ev_del;
+                    EV_SET(&ev_del, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+                    kevent(kq, &ev_del, 1, NULL, 0, NULL);
+                } else {
+                    buffer[n] = '\0';
+
+                    printf("received from %d: %s\n", fd, buffer);
+
+                    write(fd, buffer, n);
+                }
             }
-
-            buffer[n] = '\0';
         }
     }
 
