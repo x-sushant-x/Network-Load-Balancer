@@ -8,12 +8,23 @@
 #include <fcntl.h>
 #include <sys/time.h>
 
+/*
+ * <sys/event.h> is macos specific. On linux we use epoll for event poll implementation.
+ * But as I'm on macos. We are using kqueue which is macos alternative for epoll.
+ * Later will port this event poll implementation to epoll on Linux.
+ */
+
 #include <sys/event.h>
 
 #define PORT 8080
 
-
+/*
+ * Kernel manages 2 queues.
+ * 1. SYN Queue -> This store half open connections that are not fully established yet.
+ * 2. Accept Queue -> This stored the connections that are completely established.
+ */
 #define BACKLOG_SIZE 128
+
 #define MSG_MAX_SIZE 1024
 #define MAX_EVENTS 1024
 
@@ -78,12 +89,29 @@ int main(void) {
         exit(1);
     }
 
+    /* This struct represent an event that we want to watch. */
     struct kevent ev;
 
-
+    /*
+     * EV_SET is a helper macro that fils kevent struct.
+     *
+     * &ev -> struct to fill.
+     * socket_fd -> file descriptor that we want to watch.
+     * EVFILT_READ -> kind of event.
+     * ED_ADD -> Adding event. Will use EV_DEL when removing event from kqueue.
+     *
+     */
     EV_SET(&ev, socket_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 
-
+    /*
+     * kevent syscall register, monitor and receive events from kernel.
+     *
+     * kq -> kqueue instance.
+     * &ev -> changes to do. can also pass arr of kevent.
+     * 1 -> number of changes.
+     * NULL -> telling kernel not interesting in receiving back events right now. because we are just regestering yet not waiting. it is called event list.
+     * 0 -> size of event list. 0 because we passed NULL.
+     */
 
     if (kevent(kq, &ev, 1, NULL, 0, NULL) == -1) {
         perror("unable to register kevent");
@@ -94,8 +122,13 @@ int main(void) {
 
 
     while (1) {
-
-
+        /*
+         * kevent comes with 2 modes:
+         * 1. kevent(kq, &ev, 1, NULL, 0, NULL); -> Add, remove or update events.
+         * 2. kevent(kq, NULL, 0, events, MAX_EVENTS, NULL); -> wait for events.
+         *
+         * nev is total number of ready events that can be processed. this will also fill events array.
+         */
         int nev = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
 
         if (nev == -1) {
