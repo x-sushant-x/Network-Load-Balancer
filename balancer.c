@@ -1,3 +1,6 @@
+#include "types.h"
+
+#include <stddef.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -56,18 +59,18 @@ int main(void) {
     /* htons converts host byte order to network byte order for unsigned short integer. */
     server_sockaddr_in.sin_port = htons(PORT);
 
-    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd == -1) {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
         perror("unable to create socket");
         exit(-1);
     }
 
-    if (set_non_blocking(socket_fd) == -1) {
+    if (set_non_blocking(server_fd) == -1) {
         perror("unable to enable non blocking mode on socket");
         exit(-1);
     }
 
-    if (bind(socket_fd, (struct sockaddr *)&server_sockaddr_in, sizeof(server_sockaddr_in)) == -1) {
+    if (bind(server_fd, (struct sockaddr *)&server_sockaddr_in, sizeof(server_sockaddr_in)) == -1) {
         perror("unable to bind socket");
         exit(-1);
     }
@@ -78,7 +81,7 @@ int main(void) {
      * When a server starts listening for connections, the kernel maintains internal queues to manage incoming TCP requests
      * before the application officially "accepts" them with the accept() call.
      */
-    if (listen(socket_fd, BACKLOG_SIZE) == -1) {
+    if (listen(server_fd, BACKLOG_SIZE) == -1) {
         perror("unable to listen on socket");
         exit(-1);
     }
@@ -101,7 +104,7 @@ int main(void) {
      * ED_ADD -> Adding event. Will use EV_DEL when removing event from kqueue.
      *
      */
-    EV_SET(&ev, socket_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    EV_SET(&ev, server_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 
     /*
      * kevent syscall register, monitor and receive events from kernel.
@@ -140,14 +143,14 @@ int main(void) {
         for (int i = 0; i < nev; i++) {
             int fd = (int)events[i].ident;
 
-            /* Received file descriptor is socket_fd. We will not accept incoming connections. */
-            if (fd == socket_fd) {
+            /* New incomming connections. */
+            if (fd == server_fd) {
                 while(1) {
                     struct sockaddr_in client_addr;
                     socklen_t len = sizeof(client_addr);
 
-                    int conn_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len);
-                    if (conn_fd == -1) {
+                    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &len);
+                    if (client_fd == -1) {
                         /*
                          * These errors are occured when there are no more connections to accept.
                          */
@@ -159,41 +162,111 @@ int main(void) {
                         }
                     }
 
-                    if (set_non_blocking(conn_fd) == -1) {
+                    if (set_non_blocking(client_fd) == -1) {
                         perror("error while enabling non blocking mode in conn_fd");
-                        close(conn_fd);
+                        close(client_fd);
                         continue;
                     }
 
-                    struct kevent client_ev;
-                    EV_SET(&client_ev, conn_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-                    kevent(kq, &client_ev, 1, NULL, 0, NULL);
-
-                    printf("New connection: %d\n", conn_fd);
-                }
-            } else {
-                char buffer[MSG_MAX_SIZE];
-
-                int n = read(fd, buffer, sizeof(buffer) - 1);
-
-                if (n <= 0) {
-                    if (n == 0) {
-                        printf("client disconnected: %d\n", fd);
-                    } else {
-                        perror("client read error");
+                    connection_t *conn = malloc(sizeof(connection_t));
+                    if (!conn) {
+                        close(client_fd);
+                        continue;
                     }
 
+                    conn -> fd = client_fd;
+                    conn -> response = NULL;
+                    conn -> response_len = 0;
+                    conn -> response_sent = 0;
+
+                    struct kevent client_ev;
+                    EV_SET(&client_ev, client_fd, EVFILT_READ, EV_ADD, 0, 0, conn);
+                    kevent(kq, &client_ev, 1, NULL, 0, NULL);
+
+                }
+            }
+            /*
+             * Read Events
+             */
+            else if (events[i].filter == EVFILT_READ) {
+                connection_t *conn = (connection_t *) events[i].udata;
+                int should_close = 0;
+
+                while(1) {
+                    char buffer[MSG_MAX_SIZE];
+
+                     ssize_t n = read(fd, buffer, sizeof(buffer) - 1);
+
+                     if (n > 0) {
+                         // TODO - Replace this with actual load balancing logic.
+                         static const char response[] =
+                                "HTTP/1.1 200 OK\r\n"
+                                "Content-Length: 5\r\n"
+                                "Connection: close\r\n"
+                                "\r\n"
+                                "Hello";
+
+                         conn -> response = response;
+                         conn -> response_len = strlen(response);
+                         conn -> response_sent = 0;
+
+                         struct kevent write_event;
+
+                         EV_SET(&write_event, fd, EVFILT_WRITE, EV_ADD, 0, 0, conn);
+                         kevent(kq,&write_event,1,NULL,0,NULL);
+                     } else if (n == 0) {
+                         should_close = 1;
+                         break;
+                     } else {
+                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                             break;
+                         }
+
+                         perror("read");
+                         should_close = 1;
+                         break;
+                     }
+                }
+
+                if (should_close) {
                     close(fd);
+                }
+            }
+            /*
+             * Write Events
+             */
+            else if (events[i].filter == EVFILT_WRITE) {
+                connection_t *conn = (connection_t *) events[i].udata;
 
-                    struct kevent ev_del;
-                    EV_SET(&ev_del, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-                    kevent(kq, &ev_del, 1, NULL, 0, NULL);
-                } else {
-                    buffer[n] = '\0';
+                while (conn -> response_sent < conn -> response_len) {
+                    size_t remaining = conn -> response_len - conn -> response_sent;
 
-                    printf("received from %d: %s\n", fd, buffer);
+                    size_t n = write(
+                        fd,
+                        conn -> response + conn -> response_sent,
+                        remaining
+                    );
 
-                    write(fd, buffer, n);
+                    if (n > 0) {
+                        conn -> response_sent += n;
+                    } else if (n == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break;
+                        }
+
+                        perror("write");
+                        close(fd);
+                    }
+                }
+
+                if (conn -> response_sent == conn -> response_len) {
+                    struct kevent write_delete;
+
+                    EV_SET(&write_delete, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+                    kevent(kq, &write_delete, 1, NULL, 0, NULL);
+
+                    close(fd);
+                    free(conn);
                 }
             }
         }
