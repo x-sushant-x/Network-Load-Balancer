@@ -1,0 +1,17 @@
+[
+    {
+        "ip": "127.0.0.1",
+        "port": 5000,
+        "health_check_port": 8000
+    },
+    {
+        "ip": "127.0.0.1",
+        "port": 5001,
+        "health_check_port": 8000
+    },
+    {
+        "ip": "127.0.0.1",
+        "port": 5002,
+        "health_check_port": 8000
+    }
+]

@@ -1,4 +1,4 @@
-#include "types.h"
+#include "../types.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -19,7 +19,6 @@
 
 #include <sys/event.h>
 
-#define PORT 8080
 
 /*
  * Kernel manages 2 queues.
@@ -36,13 +35,13 @@
  * Syscalls like read(), write(), accept() are blocking by default. If there is no data program waits (get stucked).
  * In non-blocking mode these functions returns instantly instead of waiting.
  */
-int set_non_blocking(int fd) {
+static int set_non_blocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     // flags | O_NONBLOCK uses a bitwise OR operator which keeps existing flags and add the new.
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-int main(void) {
+void start(int port) {
     struct sockaddr_in server_sockaddr_in;
 
     server_sockaddr_in.sin_family = AF_INET;
@@ -57,7 +56,7 @@ int main(void) {
     server_sockaddr_in.sin_addr.s_addr = htonl(INADDR_ANY);
 
     /* htons converts host byte order to network byte order for unsigned short integer. */
-    server_sockaddr_in.sin_port = htons(PORT);
+    server_sockaddr_in.sin_port = htons(port);
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
@@ -75,7 +74,7 @@ int main(void) {
         exit(-1);
     }
 
-    printf("listening on port: %d\n", PORT);
+    printf("listening on port: %d\n", port);
 
     /*
      * When a server starts listening for connections, the kernel maintains internal queues to manage incoming TCP requests
@@ -271,6 +270,4 @@ int main(void) {
             }
         }
     }
-
-    return 0;
 }
