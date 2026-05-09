@@ -14,7 +14,7 @@ all:
 	$(CC) $(CFLAG) $(SRC) -o bin/$(TARGET)
 
 run: all
-	./$(TARGET)
+	./bin/$(TARGET)
 
 clean:
 	rm -f $(TARGET)
