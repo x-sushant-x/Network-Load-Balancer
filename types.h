@@ -1,8 +1,13 @@
+#include "net/server.h"
 #include <unistd.h>
 
-typedef struct {
+typedef struct connection {
   int fd;
-  const char *response; // data waiting to be sent
-  size_t response_len;  // total bytes to send
-  size_t response_sent; // total bytes already written
+
+  struct connection *peer;
+
+  char buffer[8192];
+
+  size_t buffer_len;  // total bytes to send
+  size_t buffer_sent; // total bytes already written
 } connection_t;

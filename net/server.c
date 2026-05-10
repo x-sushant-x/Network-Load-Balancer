@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 
 /*
  * <sys/event.h> is macos specific. On linux we use epoll for event poll implementation.
@@ -25,7 +26,7 @@
  * 1. SYN Queue -> This store half open connections that are not fully established yet.
  * 2. Accept Queue -> This stored the connections that are completely established.
  */
-#define BACKLOG_SIZE 128
+#define BACKLOG_SIZE 4096
 
 #define MSG_MAX_SIZE 1024
 #define MAX_EVENTS 1024
@@ -39,6 +40,50 @@ static int set_non_blocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     // flags | O_NONBLOCK uses a bitwise OR operator which keeps existing flags and add the new.
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+void enable_write_event(int kq, connection_t* conn) {
+    struct kevent ev;
+
+    EV_SET(
+        &ev,
+        conn->fd,
+        EVFILT_WRITE,
+        EV_ADD,
+        0,
+        0,
+        conn
+    );
+
+    kevent(kq, &ev, 1, NULL, 0, NULL);
+}
+
+static void disable_write_event(int kq, connection_t *conn) {
+    struct kevent ev;
+
+    EV_SET(
+        &ev,
+        conn->fd,
+        EVFILT_WRITE,
+        EV_DELETE,
+        0,
+        0,
+        NULL
+    );
+
+    kevent(kq, &ev, 1, NULL, 0, NULL);
+}
+
+static void close_connection(connection_t *conn) {
+    if (!conn) return;
+
+    if (conn->peer) {
+        close(conn->peer->fd);
+        free(conn->peer);
+    }
+
+    close(conn->fd);
+    free(conn);
 }
 
 void start(int port) {
@@ -167,21 +212,65 @@ void start(int port) {
                         continue;
                     }
 
-                    connection_t *conn = malloc(sizeof(connection_t));
-                    if (!conn) {
+                    int backend_fd = socket(AF_INET, SOCK_STREAM, 0);
+                    set_non_blocking(backend_fd);
+
+                    struct sockaddr_in backend_addr;
+                    backend_addr.sin_family = AF_INET;
+                    backend_addr.sin_port = htons(9000);
+
+                    inet_pton(
+                        AF_INET,
+                        "127.0.0.1",
+                        &backend_addr.sin_port
+                    );
+
+                    int backend_conn_resp = connect(backend_fd, (struct sockaddr*) &backend_addr, sizeof(backend_addr));
+                    if (backend_conn_resp == -1) {
+                        perror("unable to connect to backend.");
                         close(client_fd);
                         continue;
                     }
 
-                    conn -> fd = client_fd;
-                    conn -> response = NULL;
-                    conn -> response_len = 0;
-                    conn -> response_sent = 0;
+                    connection_t* client_conn = malloc(sizeof(connection_t));
+                    connection_t* backend_conn = malloc(sizeof(connection_t));
+
+                    memset(client_conn, 0, sizeof(connection_t));
+                    memset(backend_conn, 0, sizeof(connection_t));
+
+                    client_conn -> fd = client_fd;
+                    backend_conn -> fd = backend_fd;
+
+                    client_conn -> peer = backend_conn;
+                    backend_conn -> peer = client_conn;
 
                     struct kevent client_ev;
-                    EV_SET(&client_ev, client_fd, EVFILT_READ, EV_ADD, 0, 0, conn);
+
+                    EV_SET(
+                        &client_ev,
+                        client_fd,
+                        EVFILT_READ,
+                        EV_ADD,
+                        0,
+                        0,
+                        client_conn
+                    );
+
                     kevent(kq, &client_ev, 1, NULL, 0, NULL);
 
+                    struct kevent backend_ev;
+
+                    EV_SET(
+                        &backend_ev,
+                        backend_fd,
+                        EVFILT_READ,
+                        EV_ADD,
+                        0,
+                        0,
+                        backend_conn
+                    );
+
+                    kevent( kq, &backend_ev, 1, NULL, 0, NULL);
                 }
             }
             /*
@@ -189,47 +278,22 @@ void start(int port) {
              */
             else if (events[i].filter == EVFILT_READ) {
                 connection_t *conn = (connection_t *) events[i].udata;
-                int should_close = 0;
+                connection_t *peer = conn -> peer;
 
-                while(1) {
-                    char buffer[MSG_MAX_SIZE];
+                char temp[MSG_MAX_SIZE];
 
-                     ssize_t n = read(fd, buffer, sizeof(buffer) - 1);
+                ssize_t n = read(conn -> fd, &temp, sizeof(temp));
 
-                     if (n > 0) {
-                         // TODO - Replace this with actual load balancing logic.
-                         static const char response[] =
-                                "HTTP/1.1 200 OK\r\n"
-                                "Content-Length: 5\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "Hello";
-
-                         conn -> response = response;
-                         conn -> response_len = strlen(response);
-                         conn -> response_sent = 0;
-
-                         struct kevent write_event;
-
-                         EV_SET(&write_event, fd, EVFILT_WRITE, EV_ADD, 0, 0, conn);
-                         kevent(kq,&write_event,1,NULL,0,NULL);
-                     } else if (n == 0) {
-                         should_close = 1;
-                         break;
-                     } else {
-                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                             break;
-                         }
-
-                         perror("read");
-                         should_close = 1;
-                         break;
-                     }
+                if (n <= 0) {
+                    close_connection(conn);
+                    continue;
                 }
 
-                if (should_close) {
-                    close(fd);
-                }
+                memcpy(peer -> buffer, temp, n);
+                peer -> buffer_len = n;
+                peer -> buffer_sent = 0;
+
+                enable_write_event(kq, peer);
             }
             /*
              * Write Events
@@ -237,35 +301,28 @@ void start(int port) {
             else if (events[i].filter == EVFILT_WRITE) {
                 connection_t *conn = (connection_t *) events[i].udata;
 
-                while (conn -> response_sent < conn -> response_len) {
-                    size_t remaining = conn -> response_len - conn -> response_sent;
+                while(conn -> buffer_sent < conn -> buffer_len) {
+                    size_t remaining = conn -> buffer_len - conn -> buffer_sent;
 
-                    size_t n = write(
-                        fd,
-                        conn -> response + conn -> response_sent,
-                        remaining
-                    );
+                    ssize_t n = write(conn -> fd, conn -> buffer + conn -> buffer_sent, remaining);
 
                     if (n > 0) {
-                        conn -> response_sent += n;
+                        conn->buffer_sent += n;
                     } else if (n == -1) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             break;
                         }
 
-                        perror("write");
-                        close(fd);
+                        close_connection(conn);
+                        break;
                     }
                 }
 
-                if (conn -> response_sent == conn -> response_len) {
-                    struct kevent write_delete;
+                if (conn->buffer_sent == conn->buffer_len ) {
+                    conn->buffer_len = 0;
+                    conn->buffer_sent = 0;
 
-                    EV_SET(&write_delete, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-                    kevent(kq, &write_delete, 1, NULL, 0, NULL);
-
-                    close(fd);
-                    free(conn);
+                    disable_write_event(kq, conn);
                 }
             }
         }
