@@ -234,6 +234,10 @@ void start(int port) {
                     client_conn -> fd = client_fd;
                     backend_conn -> fd = backend_fd;
 
+                    /*
+                     * Here we created a two-way tunnel. peer of client socket is backend socket and peer of backend socket is client socket.
+                     */
+
                     client_conn -> peer = backend_conn;
                     backend_conn -> peer = client_conn;
 
@@ -263,7 +267,7 @@ void start(int port) {
                         backend_conn
                     );
 
-                    kevent( kq, &backend_ev, 1, NULL, 0, NULL);
+                    kevent(kq, &backend_ev, 1, NULL, 0, NULL);
                 }
             }
             /*
@@ -275,6 +279,12 @@ void start(int port) {
 
                 char temp[MSG_MAX_SIZE];
 
+                /*
+                 * Following code read data from current socket and than copies data to peer buffer.
+                 * This means that client socket data is copied to backend socket buffer.
+                 *
+                 * Same thing happen in reverse when we read some data from backend socket and copy to client buffer.
+                 */
                 ssize_t n = read(conn -> fd, &temp, sizeof(temp));
 
                 if (n <= 0) {
@@ -286,6 +296,12 @@ void start(int port) {
                 peer -> buffer_len = n;
                 peer -> buffer_sent = 0;
 
+                /*
+                 * Now we unabled kqueue write event for backend socket. This means that we are asking macOS to
+                 * notify us when backend socket can send data.
+                 *
+                 * Same thing happen in reverse when we read some data from backend socket and copy to client buffer.
+                 */
                 enable_write_event(kq, peer);
             }
             /*
