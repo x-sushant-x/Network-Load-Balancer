@@ -74,31 +74,6 @@ static void disable_write_event(int kq, connection_t *conn) {
     kevent(kq, &ev, 1, NULL, 0, NULL);
 }
 
-static void remove_events(int kq, int fd) {
-    struct kevent ev[2];
-
-    EV_SET(&ev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    EV_SET(&ev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-
-    kevent(kq, ev, 2, NULL, 0, NULL);
-}
-
-static void close_connection(int kq, connection_t *conn) {
-    if (!conn) return;
-
-    connection_t *peer = conn->peer;
-
-    remove_events(kq, conn->fd);
-
-    close(conn->fd);
-    free(conn);
-
-    if (peer) {
-        peer->peer = NULL;
-        close(peer->fd);
-        free(peer);
-    }
-}
 
 void start(int port) {
     struct sockaddr_in server_sockaddr_in;
@@ -303,7 +278,7 @@ void start(int port) {
                 ssize_t n = read(conn -> fd, &temp, sizeof(temp));
 
                 if (n <= 0) {
-                    close_connection(kq, conn);
+                    close(conn -> fd);
                     continue;
                 }
 
@@ -331,12 +306,12 @@ void start(int port) {
                             break;
                         }
 
-                        close_connection(kq, conn);
+                        close(conn -> fd);
                         break;
                     }
                 }
 
-                if (conn->buffer_sent == conn->buffer_len ) {
+                if (conn->buffer_sent == conn->buffer_len) {
                     conn->buffer_len = 0;
                     conn->buffer_sent = 0;
 
