@@ -74,16 +74,30 @@ static void disable_write_event(int kq, connection_t *conn) {
     kevent(kq, &ev, 1, NULL, 0, NULL);
 }
 
-static void close_connection(connection_t *conn) {
+static void remove_events(int kq, int fd) {
+    struct kevent ev[2];
+
+    EV_SET(&ev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    EV_SET(&ev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+
+    kevent(kq, ev, 2, NULL, 0, NULL);
+}
+
+static void close_connection(int kq, connection_t *conn) {
     if (!conn) return;
 
-    if (conn->peer) {
-        close(conn->peer->fd);
-        free(conn->peer);
-    }
+    connection_t *peer = conn->peer;
+
+    remove_events(kq, conn->fd);
 
     close(conn->fd);
     free(conn);
+
+    if (peer) {
+        peer->peer = NULL;
+        close(peer->fd);
+        free(peer);
+    }
 }
 
 void start(int port) {
@@ -222,14 +236,18 @@ void start(int port) {
                     inet_pton(
                         AF_INET,
                         "127.0.0.1",
-                        &backend_addr.sin_port
+                        &backend_addr.sin_addr
                     );
 
-                    int backend_conn_resp = connect(backend_fd, (struct sockaddr*) &backend_addr, sizeof(backend_addr));
-                    if (backend_conn_resp == -1) {
-                        perror("unable to connect to backend.");
-                        close(client_fd);
-                        continue;
+                    int ret = connect(backend_fd, (struct sockaddr*) &backend_addr, sizeof(backend_addr));
+                    if (ret == -1) {
+                        if (errno == EINPROGRESS) {
+                            printf("connecting to backend...");
+                        } else {
+                            perror("unable to connect to backend.");
+                            close(client_fd);
+                            continue;
+                        }
                     }
 
                     connection_t* client_conn = malloc(sizeof(connection_t));
@@ -285,7 +303,7 @@ void start(int port) {
                 ssize_t n = read(conn -> fd, &temp, sizeof(temp));
 
                 if (n <= 0) {
-                    close_connection(conn);
+                    close_connection(kq, conn);
                     continue;
                 }
 
@@ -313,7 +331,7 @@ void start(int port) {
                             break;
                         }
 
-                        close_connection(conn);
+                        close_connection(kq, conn);
                         break;
                     }
                 }
