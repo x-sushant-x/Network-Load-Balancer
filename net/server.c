@@ -1,5 +1,6 @@
 #include "../types.h"
 #include "../lb/utils.h"
+#include "../lb/round_robin.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -212,9 +213,16 @@ void start(int port) {
                     backend_addr.sin_family = AF_INET;
                     backend_addr.sin_port = htons(9000);
 
+                    Backend *backend = get_next_backend(backends);
+                    if (backend == NULL) {
+                        perror("unable to load balance.");
+                        close(client_fd);
+                        continue;
+                    }
+
                     inet_pton(
                         AF_INET,
-                        "127.0.0.1",
+                        backend->IP,
                         &backend_addr.sin_addr
                     );
 
