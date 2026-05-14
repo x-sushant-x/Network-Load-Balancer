@@ -11,7 +11,7 @@ SRC = $(shell find . -name "*.c")
 TARGET = lb
 
 all:
-	$(CC) $(CFLAG) $(SRC) -o bin/$(TARGET)
+	$(CC) $(CFLAG) $(SRC) -o bin/$(TARGET) -I/opt/homebrew/include -L/opt/homebrew/lib -lcjson
 
 run: all
 	./bin/$(TARGET)

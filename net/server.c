@@ -1,4 +1,5 @@
 #include "../types.h"
+#include "../lb/utils.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -76,6 +77,9 @@ static void disable_write_event(int kq, connection_t *conn) {
 
 
 void start(int port) {
+    BackendPool* backends = load_backend();
+    printf("Loaded %d backend servers.\n", backends -> count);
+
     struct sockaddr_in server_sockaddr_in;
 
     server_sockaddr_in.sin_family = AF_INET;
@@ -108,7 +112,7 @@ void start(int port) {
         exit(-1);
     }
 
-    printf("listening on port: %d\n", port);
+    printf("Proxy listening on port: %d\n", port);
 
     /*
      * When a server starts listening for connections, the kernel maintains internal queues to manage incoming TCP requests

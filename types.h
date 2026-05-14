@@ -1,3 +1,6 @@
+#ifndef TYPES_h
+#define TYPES_h
+
 #include "net/server.h"
 #include <unistd.h>
 
@@ -20,3 +23,18 @@ typedef struct connection {
   size_t buffer_len;  // total bytes to send
   size_t buffer_sent; // total bytes already written
 } connection_t;
+
+typedef struct Backend {
+  char *IP;
+  int port;
+  int health_check_port;
+  int is_healthy;
+} Backend;
+
+typedef struct BackendPool {
+  Backend *backends;
+  int count;
+  int current;
+} BackendPool;
+
+#endif
