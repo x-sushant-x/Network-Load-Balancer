@@ -211,7 +211,6 @@ void start(int port) {
 
                     struct sockaddr_in backend_addr;
                     backend_addr.sin_family = AF_INET;
-                    backend_addr.sin_port = htons(9000);
 
                     Backend *backend = get_next_backend(backends);
                     if (backend == NULL) {
@@ -219,6 +218,8 @@ void start(int port) {
                         close(client_fd);
                         continue;
                     }
+
+                    backend_addr.sin_port = htons(backend->port);
 
                     inet_pton(
                         AF_INET,
