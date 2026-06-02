@@ -24,4 +24,4 @@ Instead:
 
 
 > [!CAUTION]
-> This is a project for my personal learning and not suitable for production use case. Try [Nginx](https://nginx.org/) instead.
+> This is just a learning project.
